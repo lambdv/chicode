@@ -1,0 +1,87 @@
+// Render one conversation row with compact activity and model metadata.
+import { Theme } from "theme.slint";
+
+export struct ChatLine {
+    id: string,
+    role: string,
+    body: string,
+    model: string,
+    tools: int,
+    thinking: bool,
+}
+
+export component ChatMessage inherits Rectangle {
+    in property <ChatLine> message;
+    background: transparent;
+    height: root.message.role == "user" ? user-body.preferred-height + 44px : agent-body.preferred-height + 44px;
+
+    // Measure unwrapped text separately so short bubbles fit their content.
+    user-measure := Text {
+        visible: false;
+        text: root.message.body;
+        font-size: 14px;
+        wrap: no-wrap;
+    }
+    Rectangle {
+        visible: root.message.role == "user";
+        x: parent.width - self.width;
+        y: 8px;
+        width: min(parent.width * 0.78, max(48px, user-measure.preferred-width + 28px));
+        height: user-body.preferred-height + 28px;
+        background: Theme.selected;
+        border-radius: 12px;
+        user-body := TextInput {
+            x: 14px;
+            y: 14px;
+            width: parent.width - 28px;
+            text: root.message.body;
+            color: Theme.text;
+            font-size: 14px;
+            wrap: word-wrap;
+            single-line: false;
+            read-only: true;
+            selection-background-color: #4b4b4b;
+            selection-foreground-color: Theme.text;
+        }
+    }
+    Rectangle {
+        visible: root.message.role != "user";
+        x: 0px;
+        width: parent.width;
+        background: transparent;
+        agent-body := TextInput {
+            x: 0px;
+            y: 8px;
+            width: parent.width;
+            text: root.message.body;
+            color: root.message.role == "error" ? #d7a09b : Theme.text;
+            font-size: 14px;
+            wrap: word-wrap;
+            single-line: false;
+            read-only: true;
+            selection-background-color: #303b4b;
+            selection-foreground-color: Theme.text;
+        }
+        model-label := Text {
+            x: 0px;
+            width: min(self.preferred-width, parent.width * 0.65);
+            y: agent-body.y + agent-body.preferred-height + 10px;
+            text: root.message.model;
+            color: Theme.muted;
+            font-size: 11px;
+            overflow: elide;
+            horizontal-alignment: left;
+        }
+        Text {
+            x: model-label.width + (root.message.model != "" ? 12px : 0px);
+            y: model-label.y;
+            width: parent.width - self.x;
+            text: (root.message.tools > 0 ? root.message.tools + (root.message.tools == 1 ? " tool" : " tools") : "")
+                + (root.message.thinking ? (root.message.tools > 0 ? "  ·  " : "") + "Thinking" : "");
+            color: Theme.muted;
+            font-size: 11px;
+            overflow: elide;
+            horizontal-alignment: left;
+        }
+    }
+}

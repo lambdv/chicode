@@ -1,0 +1,110 @@
+// Prompt input with working model, reasoning, and send controls.
+import { Theme } from "theme.slint";
+import { ModelPicker } from "model-picker.slint";
+import { ReasoningPicker } from "reasoning-picker.slint";
+
+export component ChatComposer inherits Rectangle {
+    in property <bool> active: false;
+    in property <bool> busy: false;
+    in property <bool> answering-form: false;
+    in property <string> current-model;
+    in property <[string]> models;
+    in property <string> current-level;
+    in property <[string]> levels;
+    out property <bool> input-focused: entry.has-focus;
+    callback send-message(string);
+    callback search-models(string);
+    callback select-model(string);
+    callback select-level(string);
+    background: #303030;
+    border-width: 1px;
+    border-color: entry.has-focus ? Theme.accent : #414141;
+    border-radius: 14px;
+
+    // Clicking the empty part of the panel should behave like clicking the input.
+    focus-area := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        clicked => { root.focus-input(); }
+    }
+
+    // Focus the prompt and insert the first key typed outside the input.
+    public function start-input(text: string) {
+        if (root.active && (!root.busy || root.answering-form) && text != "") {
+            entry.focus();
+            entry.text = entry.text + text;
+        }
+    }
+    public function focus-input() { entry.focus(); }
+
+    Text {
+        x: 22px;
+        y: 16px;
+        width: parent.width - 44px;
+        text: root.answering-form ? "Form answer as JSON…" : root.busy ? "Working…" : root.active ? "Ask anything…" : "Create a chat to begin";
+        color: #999999;
+        font-size: 15px;
+        visible: entry.text == "";
+    }
+    entry := TextInput {
+        x: 22px;
+        y: 12px;
+        width: parent.width - 44px;
+        height: 38px;
+        color: Theme.text;
+        font-size: 15px;
+        selection-background-color: Theme.selected;
+        selection-foreground-color: Theme.text;
+        single-line: true;
+        enabled: root.active && (!root.busy || root.answering-form);
+        accepted => {
+            if (self.text != "") {
+                root.send-message(self.text);
+                self.text = "";
+            }
+        }
+    }
+    model-picker := ModelPicker {
+        x: 12px;
+        y: parent.height - 44px;
+        width: min(self.content-width, max(120px, parent.width - reasoning-picker.width - 80px));
+        height: 30px;
+        current-model: root.current-model;
+        models: root.models;
+        enabled: root.active && !root.busy;
+        search(text) => { root.search-models(text); }
+        select-model(text) => { root.select-model(text); }
+    }
+    reasoning-picker := ReasoningPicker {
+        x: model-picker.x + model-picker.width + 4px;
+        y: parent.height - 44px;
+        width: self.content-width;
+        height: 30px;
+        current-level: root.current-level;
+        levels: root.levels;
+        enabled: root.active && !root.busy;
+        select-level(level) => { root.select-level(level); }
+    }
+    Rectangle {
+        x: parent.width - 46px;
+        y: parent.height - 46px;
+        width: 34px;
+        height: 34px;
+        background: send.enabled ? (send.has-hover ? #aaaaaa : #797979) : #484848;
+        border-radius: 9px;
+        Text {
+            text: "↑";
+            font-size: 21px;
+            color: send.enabled ? #161616 : Theme.muted;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        send := TouchArea {
+            enabled: root.active && (!root.busy || root.answering-form) && entry.text != "";
+            clicked => {
+                root.send-message(entry.text);
+                entry.text = "";
+            }
+        }
+    }
+}

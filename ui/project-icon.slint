@@ -1,0 +1,17 @@
+// Compact project monogram with a stable muted background.
+export component ProjectIcon inherits Rectangle {
+    in property <string> initials;
+    in property <color> tint;
+    border-radius: 5px;
+    background: tint;
+    Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.initials;
+        color: #f0f0f0;
+        font-size: 10px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}

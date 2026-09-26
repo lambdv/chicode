@@ -1,0 +1,60 @@
+// Select the folder for an unsent chat.
+import { Theme } from "theme.slint";
+import { ProjectIcon } from "project-icon.slint";
+import { ProjectRow } from "project-row.slint";
+
+export component ProjectPicker inherits Rectangle {
+    in property <[ProjectRow]> projects;
+    in property <int> selected-id;
+    in property <string> selected-name;
+    callback select-project(int);
+    background: trigger.has-hover ? Theme.hover : transparent;
+    border-radius: 4px;
+    for project in root.projects: ProjectIcon {
+        x: 8px;
+        y: 5px;
+        width: 22px;
+        height: 22px;
+        initials: project.initials;
+        tint: project.tint;
+        visible: project.id == root.selected-id;
+    }
+    Text {
+        x: 38px;
+        width: parent.width - 60px;
+        text: root.selected-name == "" ? "Select project" : root.selected-name;
+        color: Theme.text;
+        overflow: elide;
+        vertical-alignment: center;
+    }
+    Text { x: parent.width - 18px; text: "⌄"; color: Theme.muted; vertical-alignment: center; }
+    trigger := TouchArea { clicked => { menu.show(); } }
+    menu := PopupWindow {
+        y: 34px;
+        width: max(220px, root.width);
+        height: min(300px, 8px + root.projects.length * 36px);
+        Rectangle {
+            background: Theme.panel;
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: 4px;
+            project-list := Flickable {
+                x: 4px; y: 4px;
+                width: parent.width - 8px;
+                height: parent.height - 8px;
+                content-width: self.width;
+                content-height: entries.preferred-height;
+                entries := VerticalLayout {
+                    width: project-list.width;
+                    for project in root.projects: Rectangle {
+                        height: 36px;
+                        background: choice.has-hover ? Theme.hover : transparent;
+                        ProjectIcon { x: 6px; y: 6px; width: 24px; height: 24px; initials: project.initials; tint: project.tint; }
+                        Text { x: 38px; width: parent.width - 44px; text: project.name; color: Theme.text; overflow: elide; vertical-alignment: center; }
+                        choice := TouchArea { clicked => { root.select-project(project.id); menu.close(); } }
+                    }
+                }
+            }
+        }
+    }
+}

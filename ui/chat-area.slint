@@ -1,0 +1,33 @@
+// Scrolling conversation and its empty state.
+import { ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { ChatLine, ChatMessage } from "chat-message.slint";
+
+export component ChatArea inherits Rectangle {
+    in property <[ChatLine]> messages;
+    in property <bool> active: false;
+    background: transparent;
+
+    // Reveal newly streamed content at the bottom of the conversation.
+    public function scroll-to-bottom() {
+        transcript.content-y = min(0px, transcript.visible-height - transcript.content-height);
+    }
+
+    if root.messages.length == 0: Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.active ? "What are you working on?" : "Start a new chat";
+        color: Theme.muted;
+        font-size: 16px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    transcript := ListView {
+        width: parent.width;
+        height: parent.height;
+        for message in root.messages: ChatMessage {
+            width: parent.width;
+            message: message;
+        }
+    }
+}

@@ -1,0 +1,395 @@
+// Main workspace, session navigation, conversation, and message composer.
+import { Theme } from "theme.slint";
+import { ChatLine } from "chat-message.slint";
+import { ChatArea } from "chat-area.slint";
+import { ChatComposer } from "chat-composer.slint";
+import { ProjectIcon } from "project-icon.slint";
+import { ProjectPicker } from "project-picker.slint";
+import { ProjectRow } from "project-row.slint";
+
+export { ProjectRow } from "project-row.slint";
+export struct ChatRow { id: int, title: string, initials: string, tint: color }
+export component AppWindow inherits Window {
+    title: "Agent";
+    preferred-width: 980px;
+    preferred-height: 680px;
+    min-width: 760px;
+    min-height: 480px;
+    no-frame: true;
+    resize-border-width: 6px;
+    background: Theme.background;
+    default-font-family: "Segoe UI";
+    default-font-size: 13px;
+
+    in-out property <[ChatRow]> sessions;
+    in-out property <[ProjectRow]> projects;
+    in-out property <int> active-project: -1;
+    in-out property <string> active-project-name;
+    in-out property <bool> active-started: false;
+    in-out property <[ChatLine]> messages;
+    in-out property <int> active-id: -1;
+    in-out property <string> active-title: "New chat";
+    in-out property <bool> busy: false;
+    in-out property <string> current-model;
+    in-out property <[string]> all-models;
+    in-out property <[string]> filtered-models;
+    in-out property <string> current-level;
+    in-out property <[string]> thinking-levels;
+    in-out property <string> permission-text;
+    in-out property <string> form-text;
+    in-out property <bool> window-maximized: false;
+    in-out property <float> zoom: 1;
+    private property <bool> sidebar-visible: true;
+    // Hold left click on a session and drag vertically to reorder tabs.
+    private property <int> drag-id: -1;
+    private property <int> drag-from: -1;
+    private property <int> drag-to: -1;
+    private property <length> drag-dy: 0px;
+    private property <length> sidebar-width: 204px;
+    private property <length> nav-width: root.sidebar-visible ? max(160px, min(root.sidebar-width, min(360px, workspace.width - 480px))) : 0px;
+    out property <length> navigation-width: root.nav-width;
+    out property <length> drag-boundary: workspace.width - 120px;
+    out property <float> zoom-factor: root.zoom;
+    callback search-models(string);
+    callback new-chat();
+    callback new-project();
+    callback select-project(int);
+    callback open-session(int);
+    callback close-session(int);
+    callback move-session(int, int);
+    callback send-message(string);
+    callback opencode-event(int, string, string);
+    callback select-model(string);
+    callback select-level(string);
+    callback reply-permission(bool);
+    callback minimize-window();
+    callback toggle-maximize-window();
+    callback new-window();
+    callback zoom-changed(float);
+    public function scroll-to-bottom() { chat-area.scroll-to-bottom(); }
+    // Apply a zoom step and persist only when the level changes.
+    public function change-zoom(step: float) {
+        if ((step > 0 && root.zoom < 2) || (step < 0 && root.zoom > 0.75)) {
+            root.zoom = max(0.75, min(2, root.zoom + step));
+            root.zoom-changed(root.zoom);
+        }
+    }
+
+    // Keep shortcuts active even when the message input has focus.
+    forward-focus: shortcuts;
+    shortcuts := FocusScope {
+        width: parent.width;
+        height: parent.height;
+        KeyBinding {
+            keys: @keys(Control + B);
+            activated => { root.sidebar-visible = !root.sidebar-visible; }
+        }
+        key-pressed(event) => {
+            if (!chat-composer.input-focused && root.active-id >= 0 && event.text != ""
+                && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta) {
+                chat-composer.start-input(event.text);
+                accept
+            }
+            reject
+        }
+        KeyBinding {
+            keys: @keys(Control + N);
+            activated => { root.new-chat(); }
+        }
+        KeyBinding {
+            keys: @keys(Control + Shift + N);
+            activated => { root.new-window(); }
+        }
+        KeyBinding {
+            keys: @keys(Control + "-");
+            activated => { root.change-zoom(-0.1); }
+        }
+        KeyBinding {
+            keys: @keys(Control + "=");
+            activated => { root.change-zoom(0.1); }
+        }
+        KeyBinding {
+            keys: @keys(Control + Shift + "=");
+            activated => { root.change-zoom(0.1); }
+        }
+        KeyBinding {
+            keys: @keys(Control + "+");
+            activated => { root.change-zoom(0.1); }
+        }
+
+    // Scale the workspace while keeping its layout and pointer coordinates aligned.
+    workspace := Rectangle {
+        x: 0px;
+        y: 0px;
+        width: parent.width / root.zoom;
+        height: parent.height / root.zoom;
+        transform-scale: root.zoom;
+        transform-origin: { x: 0px, y: 0px };
+
+    // The sidebar starts below the shared, borderless title row.
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.nav-width;
+        height: parent.height;
+        visible: root.sidebar-visible;
+        background: Theme.background;
+        Rectangle { x: parent.width - 1px; width: 1px; height: parent.height; background: Theme.border; }
+        WindowMoveArea { width: parent.width - 8px; height: 44px; }
+        Rectangle { y: 43px; height: 1px; width: parent.width; background: Theme.border; }
+        Rectangle {
+            x: 8px;
+            y: 54px;
+            width: parent.width - 17px;
+            height: 30px;
+            border-radius: 3px;
+            background: new-chat.has-hover ? Theme.hover : transparent;
+            Text { x: 9px; text: "+"; color: Theme.muted; font-size: 18px; vertical-alignment: center; }
+            Text { x: 32px; text: "New chat"; color: Theme.text; vertical-alignment: center; }
+            new-chat := TouchArea { clicked => { root.new-chat(); } }
+        }
+        Rectangle {
+            x: 8px; y: 88px; width: parent.width - 17px; height: 30px;
+            border-radius: 3px;
+            background: new-project.has-hover ? Theme.hover : transparent;
+            Text { x: 9px; text: "□"; color: Theme.muted; font-size: 18px; vertical-alignment: center; }
+            Text { x: 32px; text: "New project"; color: Theme.text; vertical-alignment: center; }
+            new-project := TouchArea { clicked => { root.new-project(); } }
+        }
+        Text { x: 16px; y: 136px; text: "Sessions"; color: Theme.muted; font-size: 11px; }
+        // Plain scroll container; mouse drags go straight to rows for tab
+        // reordering while the wheel keeps scrolling and touch keeps panning.
+        session-scroll := Flickable {
+            x: 8px;
+            y: 159px;
+            width: parent.width - 17px;
+            height: parent.height - self.y - 12px;
+            content-width: self.width;
+            content-height: session-column.preferred-height;
+            mouse-drag-pan-enabled: false;
+            session-column := VerticalLayout {
+                width: session-scroll.width;
+                spacing: 0px;
+                for session[index] in root.sessions: Rectangle {
+                    height: 32px;
+                    border-radius: 3px;
+                    background: transparent;
+                    // Drop marker above the row the held tab will land on.
+                    if root.drag-id != -1 && root.drag-to == index && root.drag-id != session.id: Rectangle {
+                        x: 6px;
+                        y: -1px;
+                        width: parent.width - 12px;
+                        height: 2px;
+                        background: Theme.text;
+                    }
+                    // Inner visual follows the cursor while the slot stays in place.
+                    row-visual := Rectangle {
+                        width: parent.width;
+                        height: parent.height;
+                        y: root.drag-id == session.id ? root.drag-dy : 0px;
+                        border-radius: 3px;
+                        background: session.id == root.active-id ? Theme.selected : session-touch.has-hover || root.drag-id == session.id ? Theme.hover : transparent;
+                        ProjectIcon { x: 8px; y: 5px; width: 22px; height: 22px; initials: session.initials; tint: session.tint; }
+                        Text {
+                            x: 38px;
+                            width: parent.width - 48px;
+                            text: session.title;
+                            color: session.id == root.active-id ? Theme.text : Theme.muted;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                    }
+                    session-touch := TouchArea {
+                        width: parent.width;
+                        height: parent.height;
+                        mouse-cursor: root.drag-id == session.id ? grabbing : grab;
+                        moved => {
+                            if (self.pressed) {
+                                // Start a drag after a small vertical hold movement.
+                                if (root.drag-id == -1) {
+                                    if (self.mouse-y - self.pressed-y > 6px || self.pressed-y - self.mouse-y > 6px) {
+                                        root.drag-id = session.id;
+                                        root.drag-from = index;
+                                        root.drag-to = index;
+                                    }
+                                }
+                                // Follow the cursor and map the offset to a target row.
+                                if (root.drag-id == session.id) {
+                                    root.drag-dy = self.mouse-y - self.pressed-y;
+                                    root.drag-to = max(0, min(root.sessions.length - 1,
+                                        root.drag-from + Math.round((self.mouse-y - self.pressed-y) / 32px)));
+                                }
+                            }
+                        }
+                        pointer-event(event) => {
+                            if (event.kind == PointerEventKind.up) {
+                                if (event.button == PointerEventButton.middle && root.drag-id == -1) {
+                                    root.close-session(session.id);
+                                } else if (event.button == PointerEventButton.left) {
+                                if (root.drag-id == session.id) {
+                                    if (root.drag-to != root.drag-from && root.drag-to >= 0) {
+                                        root.move-session(root.drag-id, root.drag-to);
+                                    }
+                                    root.drag-id = -1;
+                                    root.drag-from = -1;
+                                    root.drag-to = -1;
+                                    root.drag-dy = 0px;
+                                } else if (root.drag-id == -1) {
+                                    root.open-session(session.id);
+                                }
+                                }
+                            } else if (event.kind == PointerEventKind.cancel) {
+                                root.drag-id = -1;
+                                root.drag-from = -1;
+                                root.drag-to = -1;
+                                root.drag-dy = 0px;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    conversation := Rectangle {
+        x: root.nav-width;
+        y: 0px;
+        width: parent.width - root.nav-width;
+        height: parent.height;
+        background: Theme.background;
+        // Center a readable chat column; let its gutters vanish on narrow panes.
+        private property <length> chat-padding: max(0px, (self.width - 720px) / 2);
+        // The header uses the same black surface as the conversation.
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: 44px;
+            background: Theme.background;
+            WindowMoveArea { width: parent.width - 120px; height: parent.height; }
+            Text {
+                x: 18px;
+                width: max(0px, parent.width - 146px);
+                height: parent.height;
+                text: root.active-id < 0 ? "Chats" : root.active-title;
+                color: Theme.text;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+            for index in [0, 1, 2]: Rectangle {
+                x: parent.width - 120px + index * 40px;
+                width: 40px;
+                height: parent.height;
+                background: window-button.has-hover ? Theme.hover : transparent;
+                Text {
+                    text: index == 0 ? "−" : index == 1 ? (root.window-maximized ? "❐" : "□") : "×";
+                    color: window-button.has-hover ? Theme.text : Theme.muted;
+                    font-size: index == 2 ? 18px : 14px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                window-button := TouchArea {
+                    clicked => {
+                        if (index == 0) { root.minimize-window(); }
+                        else if (index == 1) { root.toggle-maximize-window(); }
+                        else { root.close(); }
+                    }
+                }
+            }
+            Rectangle { x: 0px; y: parent.height - 1px; width: parent.width; height: 1px; background: Theme.border; }
+        }
+        if root.active-id >= 0 && !root.active-started: ProjectPicker {
+            x: conversation.chat-padding + 8px;
+            y: 54px;
+            width: 240px;
+            height: 32px;
+            projects: root.projects;
+            selected-id: root.active-project;
+            selected-name: root.active-project-name;
+            select-project(id) => { root.select-project(id); }
+        }
+        chat-area := ChatArea {
+            x: conversation.chat-padding;
+            y: root.active-started ? 56px : 94px;
+            width: parent.width - 2 * conversation.chat-padding;
+            height: parent.height - (root.permission-text != "" || root.form-text != "" ? 282px : 236px) - (root.active-started ? 0px : 38px);
+            messages: root.messages;
+            active: root.active-id >= 0;
+        }
+        // Keep pending agent requests visible above the composer.
+        if root.permission-text != "": Rectangle {
+            x: conversation.chat-padding;
+            y: parent.height - 224px;
+            width: parent.width - 2 * conversation.chat-padding;
+            height: 38px;
+            background: Theme.panel;
+            Text {
+                x: 10px;
+                width: parent.width - 148px;
+                text: root.permission-text;
+                color: Theme.text;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+            Rectangle {
+                x: parent.width - 132px;
+                width: 62px;
+                height: parent.height;
+                background: allow-touch.has-hover ? Theme.hover : transparent;
+                Text { text: "Allow"; color: Theme.text; horizontal-alignment: center; vertical-alignment: center; }
+                allow-touch := TouchArea { clicked => { root.reply-permission(true); } }
+            }
+            Rectangle {
+                x: parent.width - 66px;
+                width: 62px;
+                height: parent.height;
+                background: deny-touch.has-hover ? Theme.hover : transparent;
+                Text { text: "Deny"; color: Theme.text; horizontal-alignment: center; vertical-alignment: center; }
+                deny-touch := TouchArea { clicked => { root.reply-permission(false); } }
+            }
+        }
+        if root.form-text != "" && root.permission-text == "": Rectangle {
+            x: conversation.chat-padding;
+            y: parent.height - 224px;
+            width: parent.width - 2 * conversation.chat-padding;
+            height: 38px;
+            background: Theme.panel;
+            Text { x: 10px; width: parent.width - 20px; text: root.form-text; color: Theme.text; overflow: elide; vertical-alignment: center; }
+        }
+        // Keep the composer separate from navigation and message layout.
+        chat-composer := ChatComposer {
+            x: conversation.chat-padding;
+            y: parent.height - 176px;
+            width: parent.width - 2 * conversation.chat-padding;
+            height: 152px;
+            active: root.active-id >= 0;
+            busy: root.busy;
+            answering-form: root.form-text != "";
+            current-model: root.current-model;
+            models: root.filtered-models;
+            current-level: root.current-level;
+            levels: root.thinking-levels;
+            send-message(text) => { root.send-message(text); }
+            search-models(text) => { root.search-models(text); }
+            select-model(text) => { root.select-model(text); }
+            select-level(level) => { root.select-level(level); }
+        }
+    }
+
+    // Capture drags across the divider without blocking sidebar rows.
+    resize-edge := TouchArea {
+        enabled: root.sidebar-visible;
+        x: root.nav-width - 4px;
+        width: 8px;
+        height: parent.height;
+        mouse-cursor: col-resize;
+        moved => {
+            if (self.pressed) {
+                root.sidebar-width = max(160px, min(360px, min(workspace.width - 480px,
+                    root.nav-width + self.mouse-x - self.pressed-x)));
+            }
+        }
+    }
+    }
+    }
+}

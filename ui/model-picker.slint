@@ -1,0 +1,100 @@
+// Compact selector and dark popup menu.
+import { Theme } from "theme.slint";
+import { LineEdit, ListView } from "std-widgets.slint";
+
+export component ModelPicker inherits Rectangle {
+    in property <string> current-model;
+    in property <[string]> models;
+    in property <bool> enabled: true;
+    out property <length> content-width: min(230px, label.preferred-width + 64px);
+    callback search(string);
+    callback select-model(string);
+    private property <string> query;
+    background: trigger.has-hover && root.enabled ? Theme.hover : transparent;
+    border-radius: 3px;
+    Image {
+        x: 8px;
+        y: (parent.height - self.height) / 2;
+        width: 16px;
+        height: 16px;
+        source: @image-url("icons/model.svg");
+    }
+    label := Text {
+        x: 32px;
+        width: parent.width - 56px;
+        text: root.current-model == "" ? "Select model" : root.current-model;
+        color: root.enabled ? Theme.text : Theme.muted;
+        overflow: elide;
+        vertical-alignment: center;
+    }
+    Image {
+        x: parent.width - 22px;
+        y: (parent.height - self.height) / 2;
+        width: 14px;
+        height: 14px;
+        source: @image-url("icons/chevron-down.svg");
+    }
+    trigger := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.query = "";
+            root.search("");
+            popup.show();
+        }
+    }
+    popup := PopupWindow {
+        y: -self.height - 4px;
+        width: 320px;
+        height: 320px;
+        forward-focus: search-entry;
+        Rectangle {
+            background: Theme.panel;
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: 3px;
+            search-entry := LineEdit {
+                x: 8px;
+                y: 8px;
+                width: parent.width - 16px;
+                height: 36px;
+                placeholder-text: "Search models";
+                text <=> root.query;
+                edited(text) => { root.search(text); }
+                accepted => {
+                    if (root.models.length > 0) {
+                        root.select-model(root.models[0]);
+                        popup.close();
+                    }
+                }
+            }
+            ListView {
+                x: 8px;
+                y: 52px;
+                width: parent.width - 16px;
+                height: parent.height - 60px;
+                for model in root.models: Rectangle {
+                    height: 32px;
+                    background: touch.has-hover ? Theme.hover : transparent;
+                    Text {
+                        x: 8px;
+                        width: parent.width - 16px;
+                        text: model;
+                        color: model == root.current-model ? Theme.text : Theme.muted;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                    touch := TouchArea {
+                        clicked => { root.select-model(model); popup.close(); }
+                    }
+                }
+            }
+            if root.models.length == 0: Text {
+                y: 60px;
+                text: "No matching models";
+                color: Theme.muted;
+                horizontal-alignment: center;
+            }
+        }
+    }
+}
+

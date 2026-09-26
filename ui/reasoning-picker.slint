@@ -1,0 +1,66 @@
+// Compact selector and dark popup menu.
+import { Theme } from "theme.slint";
+export component ReasoningPicker inherits Rectangle {
+    in property <string> current-level;
+    in property <[string]> levels;
+    in property <bool> enabled: true;
+    out property <length> content-width: min(140px, label.preferred-width + 60px);
+    callback select-level(string);
+    background: trigger.has-hover && root.enabled ? Theme.hover : transparent;
+    border-radius: 3px;
+
+    Image {
+        x: 8px;
+        y: (parent.height - self.height) / 2;
+        width: 16px;
+        height: 16px;
+        source: @image-url("icons/reasoning.svg");
+    }
+    label := Text {
+        x: 32px;
+        width: parent.width - 56px;
+        text: root.current-level == "" ? "Variant" : root.current-level;
+        color: root.enabled ? Theme.text : Theme.muted;
+        overflow: elide;
+        vertical-alignment: center;
+    }
+    Image {
+        x: parent.width - 22px;
+        y: (parent.height - self.height) / 2;
+        width: 14px;
+        height: 14px;
+        source: @image-url("icons/chevron-down.svg");
+    }
+    trigger := TouchArea {
+        enabled: root.enabled && root.levels.length > 0;
+        clicked => { popup.show(); }
+    }
+
+    // Show only variants OpenCode reports for the selected model.
+    popup := PopupWindow {
+        y: -self.height - 4px;
+        width: max(140px, root.width);
+        height: root.levels.length * 36px + 8px;
+        Rectangle {
+            background: Theme.panel;
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: 3px;
+            for level[index] in root.levels: Rectangle {
+                y: index * 36px + 4px;
+                height: 36px;
+                background: touch.has-hover ? Theme.hover : transparent;
+                Text {
+                    x: 10px;
+                    text: level;
+                    color: level == root.current-level ? Theme.text : Theme.muted;
+                    vertical-alignment: center;
+                }
+                touch := TouchArea {
+                    clicked => { root.select-level(level); popup.close(); }
+                }
+            }
+        }
+    }
+}
+
