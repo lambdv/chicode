@@ -2,10 +2,12 @@
 import { Theme } from "theme.slint";
 import { ChatLine } from "chat-message.slint";
 import { ChatArea } from "chat-area.slint";
-import { ChatComposer } from "chat-composer.slint";
+import { ChatComposer, Suggestion } from "chat-composer.slint";
 import { ProjectIcon } from "project-icon.slint";
 import { ProjectPicker } from "project-picker.slint";
 import { ProjectRow } from "project-row.slint";
+import { QuestionDock, Choice } from "question-dock.slint";
+import { AgentOption } from "agent-picker.slint";
 
 export { ProjectRow } from "project-row.slint";
 export struct ChatRow { id: int, title: string, initials: string, tint: color }
@@ -30,13 +32,38 @@ export component AppWindow inherits Window {
     in-out property <int> active-id: -1;
     in-out property <string> active-title: "New chat";
     in-out property <bool> busy: false;
+    in-out property <bool> submitting: false;
+    in-out property <bool> loading-attachments: false;
+    in-out property <bool> composing: false;
+    in-out property <string> draft;
+    out property <int> draft-cursor: chat-composer.cursor-offset;
+    pure callback text-length(string) -> int;
+    in-out property <[string]> attachments;
+    in-out property <image> attachment-preview;
+    in-out property <bool> preview-visible: false;
+    in-out property <[string]> input-types;
+    in-out property <[Suggestion]> suggestions;
+    in-out property <int> suggestion-index;
+    in-out property <string> current-agent;
+    in-out property <string> current-agent-name;
+    in-out property <[AgentOption]> agents;
+    in-out property <string> pending-inputs;
+    in-out property <string> question-title;
+    in-out property <string> question-text;
+    in-out property <string> question-progress;
+    in-out property <string> question-answer;
+    in-out property <[Choice]> question-choices;
+    in-out property <bool> question-first;
+    in-out property <bool> question-last;
+    in-out property <bool> question-custom;
+    in-out property <bool> question-busy;
+    in-out property <bool> question-minimized;
     in-out property <string> current-model;
     in-out property <[string]> all-models;
     in-out property <[string]> filtered-models;
     in-out property <string> current-level;
     in-out property <[string]> thinking-levels;
     in-out property <string> permission-text;
-    in-out property <string> form-text;
     in-out property <bool> window-maximized: false;
     in-out property <float> zoom: 1;
     private property <bool> sidebar-visible: true;
@@ -58,6 +85,29 @@ export component AppWindow inherits Window {
     callback close-session(int);
     callback move-session(int, int);
     callback send-message(string);
+    callback switch-draft(int);
+    callback attachment-ready(int, string);
+    callback attachment-loading(int, int);
+    callback open-attachment(string, string);
+    callback preview-attachment(string);
+    callback pick-attachments();
+    callback remove-attachment(int);
+    callback paste-image() -> bool;
+    callback composer-event(int, string, string);
+    callback suggestion-event(string, string);
+    callback draft-edited(string);
+    callback choose-suggestion(int);
+    callback context-selected(string);
+    callback interrupt();
+    callback toggle-tool(string);
+    callback copy-response(string);
+    pure callback render-markdown(string) -> styled-text;
+    callback select-agent(string);
+    callback prompt-history(int) -> string;
+    callback question-event(string);
+    callback question-choose(int);
+    callback question-navigate(int);
+    callback question-finish(bool);
     callback opencode-event(int, string, string);
     callback select-model(string);
     callback select-level(string);
@@ -67,6 +117,11 @@ export component AppWindow inherits Window {
     callback new-window();
     callback zoom-changed(float);
     public function scroll-to-bottom() { chat-area.scroll-to-bottom(); }
+    public function before-update() { chat-area.before-update(); }
+    public function reset-scroll() { chat-area.reset-scroll(); }
+    public function open-model-picker() { chat-composer.open-model-picker(); }
+    public function place-cursor(offset: int) { chat-composer.place-cursor(offset); }
+    public function toggle-sidebar() { root.sidebar-visible = !root.sidebar-visible; }
     // Apply a zoom step and persist only when the level changes.
     public function change-zoom(step: float) {
         if ((step > 0 && root.zoom < 2) || (step < 0 && root.zoom > 0.75)) {
@@ -85,7 +140,10 @@ export component AppWindow inherits Window {
             activated => { root.sidebar-visible = !root.sidebar-visible; }
         }
         key-pressed(event) => {
-            if (!chat-composer.input-focused && root.active-id >= 0 && event.text != ""
+            if (!chat-composer.input-focused && root.question-title == "" && root.active-id >= 0 && event.text != ""
+                && event.text != Key.Escape && event.text != Key.Tab && event.text != Key.Return
+                && event.text != Key.UpArrow && event.text != Key.DownArrow && event.text != Key.LeftArrow && event.text != Key.RightArrow
+                && event.text != Key.Backspace && event.text != Key.Delete && event.text != Key.Home && event.text != Key.End
                 && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta) {
                 chat-composer.start-input(event.text);
                 accept
@@ -312,11 +370,37 @@ export component AppWindow inherits Window {
             x: conversation.chat-padding;
             y: root.active-started ? 56px : 94px;
             width: parent.width - 2 * conversation.chat-padding;
-            height: parent.height - (root.permission-text != "" || root.form-text != "" ? 282px : 236px) - (root.active-started ? 0px : 38px);
+            height: max(0px, parent.height - (root.question-title != "" ? (root.question-minimized ? 286px : 490px) : root.pending-inputs != "" ? 294px : root.permission-text != "" ? 282px : 236px) - (root.active-started ? 0px : 38px));
             messages: root.messages;
             active: root.active-id >= 0;
+            toggle(id) => { root.toggle-tool(id); }
+            copy(id) => { root.copy-response(id); }
+            open-file(message, part) => { root.open-attachment(message, part); }
+            render-markdown(text) => { root.render-markdown(text) }
         }
         // Keep pending agent requests visible above the composer.
+        if root.question-title != "": QuestionDock {
+            x: conversation.chat-padding; y: parent.height - 184px - self.height;
+            width: parent.width - 2 * conversation.chat-padding;
+            height: root.question-minimized ? 48px : 252px;
+            title: root.question-title; question: root.question-text; progress: root.question-progress;
+            answer <=> root.question-answer; choices: root.question-choices; custom: root.question-custom;
+            busy: root.question-busy; first: root.question-first; last: root.question-last;
+            minimized <=> root.question-minimized;
+            choose(index) => { root.question-choose(index); }
+            navigate(direction) => { root.question-navigate(direction); }
+            submit => { root.question-finish(false); }
+            dismiss => { root.question-finish(true); }
+        }
+        if root.pending-inputs != "" && root.question-title == "" && root.permission-text == "": Flickable {
+            x: conversation.chat-padding + 8px; y: parent.height - 238px;
+            width: parent.width - 2 * conversation.chat-padding - 16px; height: 52px;
+            content-width: self.width; content-height: queued.preferred-height;
+            queued := TextInput {
+                width: parent.width; text: root.pending-inputs; color: Theme.muted; font-size: 11px;
+                single-line: false; read-only: true; wrap: word-wrap;
+            }
+        }
         if root.permission-text != "": Rectangle {
             x: conversation.chat-padding;
             y: parent.height - 224px;
@@ -348,23 +432,35 @@ export component AppWindow inherits Window {
                 deny-touch := TouchArea { clicked => { root.reply-permission(false); } }
             }
         }
-        if root.form-text != "" && root.permission-text == "": Rectangle {
-            x: conversation.chat-padding;
-            y: parent.height - 224px;
-            width: parent.width - 2 * conversation.chat-padding;
-            height: 38px;
-            background: Theme.panel;
-            Text { x: 10px; width: parent.width - 20px; text: root.form-text; color: Theme.text; overflow: elide; vertical-alignment: center; }
-        }
         // Keep the composer separate from navigation and message layout.
         chat-composer := ChatComposer {
             x: conversation.chat-padding;
-            y: parent.height - 176px;
+            // Center the prompt for a new session; keep it docked once chat starts.
+            y: root.active-id >= 0 && !root.active-started
+                ? 44px + (parent.height - 44px - 152px) / 2
+                : parent.height - 176px;
             width: parent.width - 2 * conversation.chat-padding;
             height: 152px;
             active: root.active-id >= 0;
             busy: root.busy;
-            answering-form: root.form-text != "";
+            submitting: root.submitting || root.loading-attachments;
+            composing: root.composing;
+            draft <=> root.draft;
+            text-length(text) => { root.text-length(text) }
+            attachments: root.attachments;
+            suggestions: root.suggestions;
+            suggestion-index <=> root.suggestion-index;
+            draft-edited(text) => { root.draft-edited(text); }
+            choose-suggestion(index) => { root.choose-suggestion(index); }
+            pick-attachments => { root.pick-attachments(); }
+            remove-attachment(index) => { root.remove-attachment(index); }
+            paste-image => { root.paste-image() }
+            current-agent: root.current-agent;
+            current-agent-name: root.current-agent-name;
+            agents: root.agents;
+            interrupt => { root.interrupt(); }
+            select-agent(agent) => { root.select-agent(agent); }
+            prompt-history(direction) => { root.prompt-history(direction) }
             current-model: root.current-model;
             models: root.filtered-models;
             current-level: root.current-level;
@@ -377,6 +473,12 @@ export component AppWindow inherits Window {
     }
 
     // Capture drags across the divider without blocking sidebar rows.
+    if root.preview-visible: Rectangle {
+        width: parent.width; height: parent.height; background: #101010e8;
+        TouchArea { clicked => { root.preview-visible = false; } }
+        Image { x: 24px; y: 40px; width: parent.width - 48px; height: parent.height - 64px; source: root.attachment-preview; image-fit: contain; }
+        Text { x: parent.width - 48px; y: 12px; text: "×"; color: Theme.text; font-size: 22px; }
+    }
     resize-edge := TouchArea {
         enabled: root.sidebar-visible;
         x: root.nav-width - 4px;

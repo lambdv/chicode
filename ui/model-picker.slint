@@ -10,6 +10,10 @@ export component ModelPicker inherits Rectangle {
     callback search(string);
     callback select-model(string);
     private property <string> query;
+    // Open from either the footer button or the local /model action.
+    public function open-picker() {
+        if (root.enabled) { root.query = ""; root.search(""); popup.show(); }
+    }
     background: trigger.has-hover && root.enabled ? Theme.hover : transparent;
     border-radius: 3px;
     Image {

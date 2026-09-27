@@ -1,0 +1,49 @@
+// Pending V2 form questions with keyboard-accessible choices and navigation.
+import { Button, LineEdit, CheckBox, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+export struct Choice { label: string, description: string, selected: bool }
+export component QuestionDock inherits Rectangle {
+    in property <string> title;
+    in property <string> question;
+    in property <string> progress;
+    in property <[Choice]> choices;
+    in property <bool> busy;
+    in property <bool> custom;
+    in property <bool> last;
+    in property <bool> first;
+    in-out property <string> answer;
+    in-out property <bool> minimized;
+    callback choose(int);
+    callback navigate(int);
+    callback submit();
+    callback dismiss();
+    background: Theme.panel;
+    border-radius: 6px;
+    VerticalLayout {
+        padding: 8px; spacing: 5px;
+        HorizontalLayout {
+            Text { text: root.title + "  " + root.progress; color: Theme.text; overflow: elide; }
+            Button { text: root.minimized ? "Expand" : "Minimize"; clicked => { root.minimized = !root.minimized; } }
+        }
+        if !root.minimized: VerticalLayout {
+            spacing: 5px;
+            Text { text: root.question; color: Theme.text; wrap: word-wrap; }
+            ScrollView {
+                VerticalLayout {
+                    for choice[index] in root.choices: CheckBox {
+                        text: choice.label + (choice.description == "" ? "" : " — " + choice.description);
+                        checked: choice.selected; enabled: !root.busy;
+                        toggled => { root.choose(index); }
+                    }
+                }
+            }
+            if root.custom: LineEdit { text <=> root.answer; placeholder-text: "Custom answer"; enabled: !root.busy; }
+            HorizontalLayout {
+                Button { text: "Dismiss"; enabled: !root.busy; clicked => { root.dismiss(); } }
+                Rectangle { horizontal-stretch: 1; background: transparent; }
+                Button { text: "Back"; enabled: !root.first && !root.busy; clicked => { root.navigate(-1); } }
+                Button { text: root.last ? "Submit" : "Next"; enabled: !root.busy; clicked => { if (root.last) { root.submit(); } else { root.navigate(1); } } }
+            }
+        }
+    }
+}

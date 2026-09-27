@@ -1,0 +1,62 @@
+// Primary agent selector with the same compact popup styling as model variants.
+import { Theme } from "theme.slint";
+
+export struct AgentOption { id: string, name: string }
+
+export component AgentPicker inherits Rectangle {
+    in property <string> current-agent;
+    in property <string> current-agent-name;
+    in property <[AgentOption]> agents;
+    in property <bool> enabled: true;
+    out property <length> content-width: min(125px, label.preferred-width + 46px);
+    callback select-agent(string);
+    background: trigger.has-hover && root.enabled ? Theme.hover : transparent;
+    border-radius: 3px;
+
+    label := Text {
+        x: 8px;
+        width: parent.width - 30px;
+        text: root.current-agent-name != "" ? root.current-agent-name
+            : root.current-agent != "" ? root.current-agent
+            : root.agents.length > 0 ? root.agents[0].name : "Agent";
+        color: root.enabled ? Theme.text : Theme.muted;
+        overflow: elide;
+        vertical-alignment: center;
+    }
+    Image {
+        x: parent.width - 22px;
+        y: (parent.height - self.height) / 2;
+        width: 14px;
+        height: 14px;
+        source: @image-url("icons/chevron-down.svg");
+    }
+    trigger := TouchArea {
+        enabled: root.enabled && root.agents.length > 0;
+        clicked => { popup.show(); }
+    }
+    popup := PopupWindow {
+        y: -self.height - 4px;
+        width: max(135px, root.width);
+        height: root.agents.length * 36px + 8px;
+        Rectangle {
+            background: Theme.panel;
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: 3px;
+            for agent[index] in root.agents: Rectangle {
+                y: index * 36px + 4px;
+                height: 36px;
+                background: touch.has-hover ? Theme.hover : transparent;
+                Text {
+                    x: 10px;
+                    text: agent.name;
+                    color: agent.id == root.current-agent ? Theme.text : Theme.muted;
+                    vertical-alignment: center;
+                }
+                touch := TouchArea {
+                    clicked => { root.select-agent(agent.id); popup.close(); }
+                }
+            }
+        }
+    }
+}

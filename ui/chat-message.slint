@@ -5,19 +5,33 @@ export struct ChatLine {
     id: string,
     role: string,
     body: string,
-    model: string,
-    tools: int,
-    thinking: bool,
+    message: string,
+    part: string,
+    status: string,
+    elapsed: string,
+    expanded: bool,
+    details: string,
 }
 
 export component ChatMessage inherits Rectangle {
     in property <ChatLine> message;
+    callback toggle(string);
+    callback copy(string);
+    callback open-file(string, string);
+    pure callback render-markdown(string) -> styled-text;
     background: transparent;
-    height: root.message.role == "user" ? user-body.preferred-height + 44px : agent-body.preferred-height + 44px;
+    clip: true;
+    height: root.message.role == "user" ? user-body.preferred-height + 44px
+        : root.message.role == "tool" ? 38px + (root.message.expanded ? detail.preferred-height + 16px : 0px)
+        : root.message.role == "assistant" ? markdown.preferred-height + 20px
+        : agent-body.preferred-height + 24px;
 
     // Measure unwrapped text separately so short bubbles fit their content.
+    // Zero size so a long unbroken line never widens the history.
     user-measure := Text {
         visible: false;
+        width: 0px;
+        height: 0px;
         text: root.message.body;
         font-size: 14px;
         wrap: no-wrap;
@@ -30,6 +44,7 @@ export component ChatMessage inherits Rectangle {
         height: user-body.preferred-height + 28px;
         background: Theme.selected;
         border-radius: 12px;
+        clip: true;
         user-body := TextInput {
             x: 14px;
             y: 14px;
@@ -37,7 +52,7 @@ export component ChatMessage inherits Rectangle {
             text: root.message.body;
             color: Theme.text;
             font-size: 14px;
-            wrap: word-wrap;
+            wrap: char-wrap;
             single-line: false;
             read-only: true;
             selection-background-color: #4b4b4b;
@@ -45,43 +60,51 @@ export component ChatMessage inherits Rectangle {
         }
     }
     Rectangle {
-        visible: root.message.role != "user";
+        visible: root.message.role != "user" && root.message.role != "tool" && root.message.role != "assistant";
         x: 0px;
         width: parent.width;
         background: transparent;
+        clip: true;
         agent-body := TextInput {
             x: 0px;
             y: 8px;
-            width: parent.width;
+            width: parent.width - (root.message.role == "meta" ? 60px : 0px);
             text: root.message.body;
             color: root.message.role == "error" ? #d7a09b : Theme.text;
-            font-size: 14px;
-            wrap: word-wrap;
+            font-size: root.message.role == "meta" || root.message.role == "status" ? 11px : 14px;
+            wrap: char-wrap;
             single-line: false;
             read-only: true;
             selection-background-color: #303b4b;
             selection-foreground-color: Theme.text;
         }
-        model-label := Text {
-            x: 0px;
-            width: min(self.preferred-width, parent.width * 0.65);
-            y: agent-body.y + agent-body.preferred-height + 10px;
-            text: root.message.model;
-            color: Theme.muted;
-            font-size: 11px;
-            overflow: elide;
-            horizontal-alignment: left;
+        if root.message.role == "meta": Rectangle {
+            x: parent.width - 54px; width: 50px; height: 28px;
+            Text { text: "Copy"; color: Theme.muted; font-size: 11px; vertical-alignment: center; }
+            TouchArea { clicked => { root.copy(root.message.message); } }
         }
-        Text {
-            x: model-label.width + (root.message.model != "" ? 12px : 0px);
-            y: model-label.y;
-            width: parent.width - self.x;
-            text: (root.message.tools > 0 ? root.message.tools + (root.message.tools == 1 ? " tool" : " tools") : "")
-                + (root.message.thinking ? (root.message.tools > 0 ? "  ·  " : "") + "Thinking" : "");
-            color: Theme.muted;
-            font-size: 11px;
-            overflow: elide;
-            horizontal-alignment: left;
-        }
+    }
+    markdown := StyledText {
+        visible: root.message.role == "assistant";
+        y: 8px; width: parent.width;
+        text: root.render-markdown(root.message.role == "assistant" ? root.message.body : "");
+        default-color: Theme.text;
+        default-font-size: 14px;
+    }
+    if root.message.role == "tool": Rectangle {
+        height: 34px; width: parent.width; background: Theme.panel; border-radius: 4px;
+        Text { x: 8px; width: parent.width - 130px; text: (root.message.expanded ? "▾ " : "▸ ") + root.message.body; color: Theme.text; overflow: elide; vertical-alignment: center; }
+        Text { x: parent.width - 120px; width: 112px; text: root.message.status + " " + root.message.elapsed; color: Theme.muted; font-size: 11px; vertical-alignment: center; }
+        TouchArea { clicked => { root.toggle(root.message.id); } }
+    }
+    detail := TextInput {
+        visible: root.message.role == "tool" && root.message.expanded;
+        x: 8px; y: 42px; width: parent.width - 16px;
+        text: root.message.expanded ? root.message.details : "";
+        color: Theme.muted; font-size: 12px; font-family: "Consolas";
+        single-line: false; read-only: true; wrap: word-wrap;
+    }
+    if root.message.role == "file": TouchArea {
+        clicked => { root.open-file(root.message.message, root.message.part); }
     }
 }

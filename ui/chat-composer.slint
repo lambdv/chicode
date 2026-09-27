@@ -2,16 +2,38 @@
 import { Theme } from "theme.slint";
 import { ModelPicker } from "model-picker.slint";
 import { ReasoningPicker } from "reasoning-picker.slint";
+import { AgentPicker, AgentOption } from "agent-picker.slint";
+export struct Suggestion { label: string, description: string, kind: string, value: string }
 
 export component ChatComposer inherits Rectangle {
     in property <bool> active: false;
     in property <bool> busy: false;
-    in property <bool> answering-form: false;
+    in property <bool> submitting: false;
+    in property <bool> composing: false;
+    in-out property <string> draft;
+    in property <[string]> attachments;
+    callback pick-attachments();
+    callback remove-attachment(int);
+    callback paste-image() -> bool;
+    in property <[Suggestion]> suggestions;
+    in-out property <int> suggestion-index;
+    callback draft-edited(string);
+    callback choose-suggestion(int);
+    in property <string> current-agent;
+    in property <string> current-agent-name;
+    in property <[AgentOption]> agents;
+    callback interrupt();
+    callback select-agent(string);
+    callback prompt-history(int) -> string;
+    private property <length> cursor-y;
     in property <string> current-model;
     in property <[string]> models;
     in property <string> current-level;
     in property <[string]> levels;
     out property <bool> input-focused: entry.has-focus;
+    // Slint is pinned; UTF-8 offsets keep mention edits and history navigation exact.
+    out property <int> cursor-offset: entry.cursor-position-byte-offset;
+    pure callback text-length(string) -> int;
     callback send-message(string);
     callback search-models(string);
     callback select-model(string);
@@ -30,59 +52,135 @@ export component ChatComposer inherits Rectangle {
 
     // Focus the prompt and insert the first key typed outside the input.
     public function start-input(text: string) {
-        if (root.active && (!root.busy || root.answering-form) && text != "") {
+        if (root.active && text != "") {
             entry.focus();
             entry.text = entry.text + text;
         }
     }
     public function focus-input() { entry.focus(); }
+    public function place-cursor(offset: int) { entry.set-selection-offsets(offset, offset); }
+    public function open-model-picker() { model-picker.open-picker(); }
+    // Keep the draft until the bridge confirms admission.
+    function submit() {
+        if (!root.submitting && !root.composing) {
+            if (entry.text != "" || root.attachments.length > 0) { root.send-message(entry.text); }
+            else if (root.busy) { root.interrupt(); }
+        }
+    }
 
     Text {
         x: 22px;
         y: 16px;
         width: parent.width - 44px;
-        text: root.answering-form ? "Form answer as JSON…" : root.busy ? "Working…" : root.active ? "Ask anything…" : "Create a chat to begin";
+        text: "write a prompt";
         color: #999999;
         font-size: 15px;
         visible: entry.text == "";
     }
-    entry := TextInput {
+    editor := Flickable {
         x: 22px;
         y: 12px;
         width: parent.width - 44px;
-        height: 38px;
+        height: root.attachments.length > 0 ? 36px : 58px;
+        content-width: self.width;
+        content-height: max(self.height, entry.preferred-height);
+        entry := TextInput {
+        width: editor.width;
+        height: max(editor.height, self.preferred-height);
+        text <=> root.draft;
         color: Theme.text;
         font-size: 15px;
         selection-background-color: Theme.selected;
         selection-foreground-color: Theme.text;
-        single-line: true;
-        enabled: root.active && (!root.busy || root.answering-form);
-        accepted => {
-            if (self.text != "") {
-                root.send-message(self.text);
-                self.text = "";
+        single-line: false;
+        wrap: word-wrap;
+        enabled: root.active;
+        edited => { root.draft-edited(""); debounce.restart(); }
+        cursor-position-changed(position) => {
+            root.cursor-y = position.y;
+            if (position.y + editor.content-y < 0px) { editor.content-y = -position.y; }
+            else if (position.y + editor.content-y + 22px > editor.height) { editor.content-y = editor.height - position.y - 22px; }
+        }
+        key-pressed(event) => {
+            if (root.composing) { return reject; }
+            if (root.suggestions.length > 0) {
+                if (event.text == Key.DownArrow) { root.suggestion-index = mod(root.suggestion-index + 1, root.suggestions.length); return accept; }
+                if (event.text == Key.UpArrow) { root.suggestion-index = mod(root.suggestion-index + root.suggestions.length - 1, root.suggestions.length); return accept; }
+                if ((event.text == Key.Return && !event.modifiers.shift) || event.text == Key.Tab) { root.choose-suggestion(root.suggestion-index); return accept; }
+                if (event.text == Key.Escape) { root.draft-edited(""); return accept; }
             }
+            if (event.modifiers.control && (event.text == "v" || event.text == "V") && root.paste-image()) { return accept; }
+            if (event.text == Key.Return && !event.modifiers.shift) { root.submit(); return accept; }
+            if (event.text == Key.UpArrow && !event.modifiers.shift && !event.modifiers.control && self.cursor-position-byte-offset == 0 && self.anchor-position-byte-offset == 0) {
+                self.text = root.prompt-history(-1); root.place-cursor(root.text-length(self.text)); return accept;
+            }
+            if (event.text == Key.DownArrow && !event.modifiers.shift && !event.modifiers.control && self.cursor-position-byte-offset == root.text-length(self.text) && self.anchor-position-byte-offset == self.cursor-position-byte-offset) {
+                self.text = root.prompt-history(1); root.place-cursor(root.text-length(self.text)); return accept;
+            }
+            reject
         }
     }
-    model-picker := ModelPicker {
-        x: 12px;
+    }
+    debounce := Timer { interval: 100ms; triggered => { root.draft-edited(root.draft); } }
+    if root.suggestions.length > 0: Rectangle {
+        x: 8px; y: -min(216px, root.suggestions.length * 36px) - 6px;
+        width: parent.width - 16px; height: min(216px, root.suggestions.length * 36px);
+        background: Theme.panel; border-radius: 5px;
+        // Keep the selected suggestion visible using a bounded six-row window.
+        for item[index] in root.suggestions: Rectangle {
+            visible: index >= max(0, root.suggestion-index - 5) && index < max(6, root.suggestion-index + 1);
+            y: (index - max(0, root.suggestion-index - 5)) * 36px;
+            width: parent.width; height: 36px;
+            background: index == root.suggestion-index ? Theme.selected : transparent;
+            Text { x: 8px; y: 2px; text: item.label; color: Theme.text; font-size: 12px; }
+            Text { x: 8px; y: 18px; width: parent.width - 16px; text: item.description; color: Theme.muted; font-size: 10px; overflow: elide; }
+            TouchArea { clicked => { root.choose-suggestion(index); } }
+        }
+    }
+    if root.attachments.length > 0: HorizontalLayout {
+        x: 18px; y: 50px; height: 24px; width: parent.width - 36px; spacing: 4px;
+        for name[index] in root.attachments: Rectangle {
+            background: Theme.selected; border-radius: 4px;
+            Text { x: 4px; width: parent.width - 8px; text: name + " ×"; color: Theme.text; font-size: 11px; overflow: elide; vertical-alignment: center; }
+            TouchArea { clicked => { root.remove-attachment(index); } }
+        }
+    }
+    agent-picker := AgentPicker {
+        x: 42px;
         y: parent.height - 44px;
-        width: min(self.content-width, max(120px, parent.width - reasoning-picker.width - 80px));
+        width: self.content-width;
+        height: 30px;
+        agents: root.agents;
+        current-agent: root.current-agent;
+        current-agent-name: root.current-agent-name;
+        enabled: root.active && !root.busy && !root.submitting;
+        select-agent(id) => { root.select-agent(id); }
+    }
+    model-picker := ModelPicker {
+        x: agent-picker.x + agent-picker.width + 4px;
+        y: parent.height - 44px;
+        width: min(self.content-width, max(100px, parent.width - agent-picker.width - reasoning-picker.width - 110px));
         height: 30px;
         current-model: root.current-model;
         models: root.models;
-        enabled: root.active && !root.busy;
+        enabled: root.active && !root.busy && !root.submitting;
         search(text) => { root.search-models(text); }
         select-model(text) => { root.select-model(text); }
+    }
+    Rectangle {
+        x: 12px; y: parent.height - 44px; width: 26px; height: 30px;
+        Text { text: "+"; color: Theme.text; font-size: 18px; vertical-alignment: center; }
+        TouchArea { clicked => { root.pick-attachments(); } }
     }
     reasoning-picker := ReasoningPicker {
         x: model-picker.x + model-picker.width + 4px;
         y: parent.height - 44px;
-        width: self.content-width;
+        visible: root.levels.length > 1;
+        width: root.levels.length > 1 ? self.content-width : 0px;
         height: 30px;
         current-level: root.current-level;
         levels: root.levels;
-        enabled: root.active && !root.busy;
+        enabled: root.active && !root.busy && !root.submitting;
         select-level(level) => { root.select-level(level); }
     }
     Rectangle {
@@ -93,18 +191,15 @@ export component ChatComposer inherits Rectangle {
         background: send.enabled ? (send.has-hover ? #aaaaaa : #797979) : #484848;
         border-radius: 9px;
         Text {
-            text: "↑";
+            text: root.submitting ? "…" : root.busy && entry.text == "" && root.attachments.length == 0 ? "■" : "↑";
             font-size: 21px;
             color: send.enabled ? #161616 : Theme.muted;
             horizontal-alignment: center;
             vertical-alignment: center;
         }
         send := TouchArea {
-            enabled: root.active && (!root.busy || root.answering-form) && entry.text != "";
-            clicked => {
-                root.send-message(entry.text);
-                entry.text = "";
-            }
+            enabled: root.active && !root.submitting && (root.busy || entry.text != "" || root.attachments.length > 0);
+            clicked => { root.submit(); }
         }
     }
 }

@@ -2,10 +2,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod attachments;
+mod composer;
 mod chats;
 mod events;
 mod instance;
+mod markdown;
 mod opencode;
+mod questions;
+mod suggestions;
 mod store;
 #[cfg(windows)]
 mod window;
@@ -29,10 +34,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Build shared state and the first shell before any heavy work.
     let shared = app::init_shared(directory.clone());
     app::create_window(&shared, directory)?;
-    // Defer SQLite, Node, and OpenCode until after first paint.
+    // Let the shell paint before loading local chat metadata.
     let deferred = shared.clone();
-    slint::Timer::single_shot(Duration::from_millis(0), move || {
-        app::ensure_backend(deferred);
+    slint::Timer::single_shot(Duration::from_millis(32), move || {
+        app::ensure_store(deferred);
     });
     // Drain any second-launch requests that arrived during startup.
     slint::Timer::single_shot(Duration::from_millis(200), || {

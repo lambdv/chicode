@@ -2,7 +2,7 @@
 use crate::{AppWindow, ChatLine, ChatRow, ProjectRow, chats, events, opencode, store::{Chat, Project, Store}};
 use serde_json::{Value, json};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
-use std::{cell::RefCell, collections::{HashMap, HashSet}, error::Error, rc::Rc, sync::{Arc, Mutex, mpsc::Sender}};
+use std::{cell::RefCell, collections::{HashMap, HashSet}, error::Error, rc::Rc, sync::{Arc, Mutex, mpsc::Sender}, time::Duration};
 
 // State shared by every window in this process.
 pub struct Shared {
@@ -11,7 +11,6 @@ pub struct Shared {
     pub ready: HashSet<i64>,
     pub busy: HashSet<i64>,
     pub permissions: HashMap<i64, String>,
-    pub forms: HashMap<i64, String>,
     pub models: Vec<String>,
     pub directory: String,
     pub windows: Arc<Mutex<Vec<slint::Weak<AppWindow>>>>,
@@ -92,7 +91,7 @@ thread_local! {
 pub fn init_shared(directory: String) -> Rc<RefCell<Shared>> {
     let shared = Rc::new(RefCell::new(Shared {
         store: None, bridge: None, ready: HashSet::new(), busy: HashSet::new(),
-        permissions: HashMap::new(), forms: HashMap::new(), models: Vec::new(),
+        permissions: HashMap::new(), models: Vec::new(),
         directory, windows: Arc::new(Mutex::new(Vec::new())),
     }));
     APP.with(|slot| *slot.borrow_mut() = Some(shared.clone()));
@@ -125,13 +124,7 @@ pub fn drain_requests() {
         };
         for dir in dirs {
             let dir = if dir.is_empty() { shared.borrow().directory.clone() } else { dir };
-            if let Ok(weak) = create_window(&shared, dir) {
-                if shared.borrow().store.is_some() {
-                    if let Some(next) = weak.upgrade() {
-                        chats::open_first(&next, &shared);
-                    }
-                }
-            }
+            let _ = create_window(&shared, dir);
         }
     });
 }
@@ -161,7 +154,9 @@ pub fn refresh_all(shared: &Shared) {
 pub fn append(ui: &AppWindow, role: &str, body: &str) {
     let messages = ui.get_messages();
     let model = messages.as_any().downcast_ref::<VecModel<ChatLine>>().unwrap();
-    model.push(ChatLine { id: "".into(), role: role.into(), body: body.into(), model: "".into(), tools: 0, thinking: false });
+    ui.invoke_before_update();
+    let id = format!("local/{}", uuid::Uuid::new_v4());
+    model.push(ChatLine { id: id.clone().into(), message: id.into(), role: role.into(), body: body.into(), ..Default::default() });
     ui.invoke_scroll_to_bottom();
 }
 
@@ -180,6 +175,9 @@ pub fn send(ui: &AppWindow, shared: &Shared, value: Value) -> bool {
 
 /// Select a chat and request its server state without blocking Slint.
 pub fn open(ui: &AppWindow, shared: &Rc<RefCell<Shared>>, chat: &Chat) {
+    ui.invoke_switch_draft(chat.id as i32);
+    ui.invoke_reset_scroll();
+    ui.set_pending_inputs("".into());
     ui.set_active_id(chat.id as i32);
     ui.set_active_title(chat.title.clone().into());
     ui.set_active_started(chat.started);
@@ -189,9 +187,14 @@ pub fn open(ui: &AppWindow, shared: &Rc<RefCell<Shared>>, chat: &Chat) {
     ui.set_active_project_name(project.as_ref().map(|project| project.name.as_str()).unwrap_or("").into());
     ui.set_busy(shared.borrow().busy.contains(&chat.id));
     ui.set_current_model("".into());
+    ui.set_current_agent("".into());
+    ui.set_current_agent_name("".into());
+    ui.set_agents(ModelRc::default());
+    ui.set_input_types(ModelRc::default());
+    ui.invoke_suggestion_event("commands".into(), "[]".into());
     ui.set_current_level("".into());
     ui.set_permission_text("".into());
-    ui.set_form_text("".into());
+    ui.invoke_question_event("null".into());
     ui.set_thinking_levels(ModelRc::new(VecModel::<slint::SharedString>::default()));
     ui.set_messages(ModelRc::new(VecModel::<ChatLine>::default()));
     // Reuse cached models so new windows feel instant.
@@ -202,11 +205,12 @@ pub fn open(ui: &AppWindow, shared: &Rc<RefCell<Shared>>, chat: &Chat) {
     }
     let directory = project.map(|project| project.path).unwrap_or_else(|| shared.borrow().directory.clone());
     shared.borrow_mut().ready.remove(&chat.id);
+    ensure_bridge(shared);
     let shared_ref = shared.borrow();
     send(ui, &shared_ref, json!({ "kind": "open", "id": chat.id, "session": chat.session, "title": chat.title, "directory": directory }));
 }
 
-/// Build, show, and register one window without touching the backend.
+/// Show a new shell immediately, then wire its chat controls on the next UI turn.
 pub fn create_window(shared: &Rc<RefCell<Shared>>, _directory: String) -> Result<slint::Weak<AppWindow>, Box<dyn Error>> {
     let ui = AppWindow::new()?;
     // Fast shell: empty lists paint before SQLite or Node start.
@@ -232,19 +236,26 @@ pub fn create_window(shared: &Rc<RefCell<Shared>>, _directory: String) -> Result
     let s = shared.clone();
     ui.on_new_window(move || {
         let dir = s.borrow().directory.clone();
-        if let Ok(weak) = create_window(&s, dir) {
-            if s.borrow().store.is_some() {
-                if let Some(next) = weak.upgrade() {
-                    chats::open_first(&next, &s);
-                }
-            }
-        }
+        let _ = create_window(&s, dir);
     });
     #[cfg(windows)]
     {
         use slint::winit_030::WinitWindowAccessor;
         let weak = ui.as_weak();
         ui.window().on_winit_window_event(move |window, event| {
+            if let slint::winit_030::winit::event::WindowEvent::DroppedFile(path) = event {
+                if let Some(ui) = weak.upgrade() { crate::attachments::dropped(&ui, path.clone()); }
+            }
+            if let slint::winit_030::winit::event::WindowEvent::Ime(ime) = event {
+                if let Some(ui) = weak.upgrade() {
+                    use slint::winit_030::winit::event::Ime;
+                    match ime {
+                        Ime::Preedit(text, _) => ui.set_composing(!text.is_empty()),
+                        Ime::Commit(_) | Ime::Disabled => ui.set_composing(false),
+                        _ => {},
+                    }
+                }
+            }
             if let slint::winit_030::winit::event::WindowEvent::Resized(_) = event {
                 if let Some(ui) = weak.upgrade() {
                     ui.set_window_maximized(window.is_maximized());
@@ -263,34 +274,45 @@ pub fn create_window(shared: &Rc<RefCell<Shared>>, _directory: String) -> Result
             }
         })?;
     }
-    events::connect(&ui, shared);
-    chats::wire(&ui, shared);
-    if let Some(store) = &shared.borrow().store {
-        if let Ok(zoom) = store.zoom() {
-            ui.set_zoom(zoom);
-        }
+    // Reuse visible models instead of synchronously querying SQLite per window.
+    let previous = shared.borrow().windows.lock().unwrap().iter().find_map(|window| window.upgrade());
+    if let Some(previous) = previous {
+        ui.set_sessions(previous.get_sessions());
+        ui.set_projects(previous.get_projects());
+        ui.set_zoom(previous.get_zoom());
     }
     ui.show()?;
     let weak = keep(ui);
     shared.borrow().windows.lock().unwrap().push(weak.clone());
     shared.borrow().windows.lock().unwrap().retain(|w| w.upgrade().is_some());
-    refresh_projects(&shared.borrow());
+    // Let Slint present the new shell before registering its feature handlers.
+    let state = shared.clone();
+    let deferred = weak.clone();
+    slint::Timer::single_shot(Duration::from_millis(16), move || {
+        let Some(ui) = deferred.upgrade() else { return };
+        events::connect(&ui, &state);
+        crate::questions::wire(&ui, &state);
+        chats::wire(&ui, &state);
+        crate::composer::wire(&ui, &state);
+        crate::attachments::wire(&ui);
+        crate::suggestions::wire(&ui, &state);
+    });
     Ok(weak)
 }
 
 /// Open SQLite off the UI thread so even a slow disk cannot stall first paint.
-pub fn ensure_backend(shared: Rc<RefCell<Shared>>) {
-    if shared.borrow().bridge.is_some() {
+pub fn ensure_store(shared: Rc<RefCell<Shared>>) {
+    if shared.borrow().store.is_some() {
         return;
     }
     std::thread::spawn(move || {
         let store = Store::open().map_err(|error| error.to_string());
-        let _ = slint::invoke_from_event_loop(move || finish_backend(store));
+        let _ = slint::invoke_from_event_loop(move || finish_store(store));
     });
 }
 
-/// Attach local metadata and start the bridge after SQLite is ready.
-fn finish_backend(result: Result<Store, String>) {
+/// Publish local metadata without connecting to OpenCode until a chat is opened.
+fn finish_store(result: Result<Store, String>) {
     let Some(shared) = APP.with(|slot| slot.borrow().clone()) else { return };
     // Report startup failures inside the already visible window.
     match result {
@@ -312,6 +334,7 @@ fn finish_backend(result: Result<Store, String>) {
             }
             shared.borrow_mut().store = Some(store);
             refresh_projects(&shared.borrow());
+            refresh_all(&shared.borrow());
         }
         Err(message) => {
             for weak in shared.borrow().windows.lock().unwrap().iter() {
@@ -322,7 +345,13 @@ fn finish_backend(result: Result<Store, String>) {
             return;
         }
     }
-    // Start one bridge for all windows and broadcast to each shell.
+}
+
+/// Start one shared bridge on demand and broadcast its events to every window.
+fn ensure_bridge(shared: &Rc<RefCell<Shared>>) {
+    if shared.borrow().bridge.is_some() {
+        return;
+    }
     let directory = shared.borrow().directory.clone();
     let targets = shared.borrow().windows.clone();
     let bridge = opencode::start(directory, move |id, kind: String, data: Value| {
@@ -335,10 +364,4 @@ fn finish_backend(result: Result<Store, String>) {
         }
     });
     shared.borrow_mut().bridge = Some(bridge);
-    // Fill every shell that opened before the backend was ready.
-    let windows: Vec<_> = shared.borrow().windows.lock().unwrap().iter().filter_map(|w| w.upgrade()).collect();
-    for ui in windows {
-        chats::open_first(&ui, &shared);
-    }
-    drain_requests();
 }

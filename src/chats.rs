@@ -1,6 +1,6 @@
 //! Per-window chat actions sharing one backend.
 use crate::{AppWindow, app, store::Chat};
-use serde_json::{Value, json};
+use serde_json::json;
 use slint::{ComponentHandle, Model};
 use std::{cell::RefCell, rc::Rc};
 
@@ -9,8 +9,9 @@ pub fn open_first(ui: &AppWindow, shared: &Rc<RefCell<app::Shared>>) {
     let chats = app::show_chats(ui, &shared.borrow()).unwrap_or_default();
     if let Some(chat) = chats.first() {
         app::open(ui, shared, chat);
-    } else if let Some(store) = &shared.borrow().store {
-        if let Ok(chat) = store.create() {
+    } else {
+        let created = shared.borrow().store.as_ref().and_then(|store| store.create().ok());
+        if let Some(chat) = created {
             app::refresh_all(&shared.borrow());
             app::open(ui, shared, &chat);
         }
@@ -19,34 +20,13 @@ pub fn open_first(ui: &AppWindow, shared: &Rc<RefCell<app::Shared>>) {
 
 // Wire sidebar, model, permission, and composer actions for one window.
 pub fn wire(ui: &AppWindow, shared: &Rc<RefCell<app::Shared>>) {
-    // Reuse a blank top chat instead of creating multiple empty sessions.
+    // Every request creates a separate draft, even when other drafts are empty.
     let s = shared.clone();
     let weak = ui.as_weak();
     ui.on_new_chat(move || {
         let ui = weak.unwrap();
         let shared_ref = s.borrow();
         let Some(store) = &shared_ref.store else { return };
-        match store.list() {
-            Ok(chats) => {
-                if let Some(chat) = chats.first().filter(|chat| !chat.started) {
-                    let mut changed = false;
-                    if let Ok(Some(project)) = store.last_project() {
-                        if project != chat.project_id { changed = store.set_project(chat.id, project).unwrap_or(false); }
-                    }
-                    let updated = if changed { store.list().ok().and_then(|chats| chats.into_iter().find(|item| item.id == chat.id)) } else { None };
-                    drop(shared_ref);
-                    if let Some(updated) = updated {
-                        app::refresh_all(&s.borrow());
-                        app::open(&ui, &s, &updated);
-                    } else { ui.invoke_open_session(chat.id as i32); }
-                    return;
-                }
-            }
-            Err(error) => {
-                app::append(&ui, "error", &error.to_string());
-                return;
-            }
-        }
         match store.create() {
             Ok(chat) => {
                 drop(shared_ref);
@@ -75,6 +55,31 @@ pub fn wire(ui: &AppWindow, shared: &Rc<RefCell<app::Shared>>) {
                 }
             }
             Err(error) => app::append(&ui, "error", &format!("Cannot open chat: {error}")),
+        }
+    });
+    // Persist the displayed order after a session is dragged to another row.
+    let s = shared.clone();
+    let weak = ui.as_weak();
+    ui.on_move_session(move |id, target| {
+        let Some(ui) = weak.upgrade() else { return };
+        let state = s.borrow();
+        let Some(store) = &state.store else { return };
+        match store.list() {
+            Ok(chats) => {
+                let Some(from) = chats.iter().position(|chat| chat.id == id as i64) else { return };
+                let target = (target as usize).min(chats.len().saturating_sub(1));
+                if from == target { return; }
+                let mut ids = chats.into_iter().map(|chat| chat.id).collect::<Vec<_>>();
+                let moved = ids.remove(from);
+                ids.insert(target, moved);
+                if let Err(error) = store.reorder(&ids) {
+                    app::append(&ui, "error", &format!("Cannot reorder chats: {error}"));
+                    return;
+                }
+                drop(state);
+                app::refresh_all(&s.borrow());
+            }
+            Err(error) => app::append(&ui, "error", &format!("Cannot reorder chats: {error}")),
         }
     });
     // Hiding a chat never deletes its OpenCode session.
@@ -149,7 +154,7 @@ pub fn wire(ui: &AppWindow, shared: &Rc<RefCell<app::Shared>>) {
             app::send(&ui, &s.borrow(), json!({ "kind": "variant", "id": id, "variant": level.to_string() }));
         }
     });
-    // Permission choices are explicit; never auto-approve agent actions.
+    // Keep manual permission choices available if automatic approval fails.
     let s = shared.clone();
     let weak = ui.as_weak();
     ui.on_reply_permission(move |allow| {
@@ -157,49 +162,6 @@ pub fn wire(ui: &AppWindow, shared: &Rc<RefCell<app::Shared>>) {
         let id = ui.get_active_id() as i64;
         if let Some(request) = s.borrow().permissions.get(&id).cloned() {
             app::send(&ui, &s.borrow(), json!({ "kind": "permission", "id": id, "request": request, "decision": if allow { "once" } else { "reject" } }));
-        }
-    });
-    // Send a prompt or answer the currently pending form.
-    let s = shared.clone();
-    let weak = ui.as_weak();
-    ui.on_send_message(move |text| {
-        let ui = weak.unwrap();
-        let id = ui.get_active_id() as i64;
-        let text = text.trim().to_owned();
-        if text.is_empty() || !s.borrow().ready.contains(&id) {
-            return;
-        }
-        let mut state = s.borrow_mut();
-        if let Some(form) = state.forms.get(&id).cloned() {
-            match serde_json::from_str::<Value>(&text) {
-                Ok(Value::Object(answer)) => {
-                    app::send(&ui, &state, json!({ "kind": "form", "id": id, "form": form, "answer": answer }));
-                }
-                _ => app::append(&ui, "error", "Answer the form with a JSON object, e.g. {\"name\":\"value\"}."),
-            }
-            return;
-        }
-        if state.busy.contains(&id) {
-            return;
-        }
-        if !app::send(&ui, &state, json!({ "kind": "prompt", "id": id, "text": text })) {
-            return;
-        }
-        app::append(&ui, "user", &text);
-        ui.set_busy(true);
-        ui.set_active_started(true);
-        state.busy.insert(id);
-        if let Some(store) = &state.store {
-            store.mark_started(id).ok();
-            if ui.get_active_title() == "New chat" {
-                let title = text.chars().take(36).collect::<String>();
-                if store.rename(id, &title).is_ok() {
-                    ui.set_active_title(title.clone().into());
-                    drop(state);
-                    app::refresh_all(&s.borrow());
-                    app::send(&ui, &s.borrow(), json!({ "kind": "rename", "id": id, "title": title }));
-                }
-            }
         }
     });
     // Persist keyboard zoom changes for future windows.

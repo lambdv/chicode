@@ -6,17 +6,30 @@ import { ChatLine, ChatMessage } from "chat-message.slint";
 export component ChatArea inherits Rectangle {
     in property <[ChatLine]> messages;
     in property <bool> active: false;
+    callback toggle(string);
+    callback copy(string);
+    callback open-file(string, string);
+    pure callback render-markdown(string) -> styled-text;
+    private property <bool> following: true;
+    private property <length> scroll-height: transcript.content-height;
+    changed scroll-height => { if (root.following && !settle.running) { settle.restart(); } }
+    // Snapshot intent before model mutations change the content height.
+    public function before-update() {
+        root.following = root.following || transcript.content-height + transcript.content-y - transcript.visible-height < 56px;
+    }
+    public function reset-scroll() { root.following = true; }
     background: transparent;
+    clip: true;
 
     // Reveal newly streamed content at the bottom of the conversation.
     public function scroll-to-bottom() {
-        transcript.content-y = min(0px, transcript.visible-height - transcript.content-height);
+        if (root.following && !settle.running) { settle.restart(); }
     }
 
-    if root.messages.length == 0: Text {
+    if root.messages.length == 0 && !root.active: Text {
         width: parent.width;
         height: parent.height;
-        text: root.active ? "What are you working on?" : "Start a new chat";
+        text: "Select a chat or start a new one";
         color: Theme.muted;
         font-size: 16px;
         horizontal-alignment: center;
@@ -25,9 +38,26 @@ export component ChatArea inherits Rectangle {
     transcript := ListView {
         width: parent.width;
         height: parent.height;
+        // Pin content to viewport width so long lines wrap down, never sideways.
+        content-width: self.width;
+        scrolled => { root.following = self.content-height + self.content-y - self.visible-height < 56px; }
         for message in root.messages: ChatMessage {
             width: parent.width;
             message: message;
+            toggle(id) => { root.toggle(id); }
+            copy(id) => { root.copy(id); }
+            open-file(message, part) => { root.open-file(message, part); }
+            render-markdown(text) => { root.render-markdown(text) }
         }
+    }
+    settle := Timer {
+        interval: 16ms;
+        triggered => { if (root.following) { transcript.content-y = min(0px, transcript.visible-height - transcript.content-height); } }
+    }
+    if transcript.content-height + transcript.content-y - transcript.visible-height > 56px: Rectangle {
+        x: parent.width - 128px; y: parent.height - 38px; width: 120px; height: 30px;
+        background: Theme.selected; border-radius: 5px;
+        Text { text: "Jump to latest ↓"; color: Theme.text; horizontal-alignment: center; vertical-alignment: center; }
+        TouchArea { clicked => { root.following = true; root.scroll-to-bottom(); } }
     }
 }

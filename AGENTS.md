@@ -1,8 +1,8 @@
 this project is a ai coding agent desktop graphical user interface. similar to chatgpt app or opencode desktop
 it uses OpenCode V2 through the official client
 
-# goal
-the goal of the project is to make an extremely light weight and blazingly fast coding agent desktop GUI. it should be extremly low memory usage and everything must feel as fast as possible.
+# project objective
+this project is meant to be a blazing fast, low memory usage desktop GUI to sending and reciving messages from agent harnesses. its meant to be ran on a low end laptop with like 8gb ram where the windows os takes like 3gb to run, chrome takes ike 1gb and vs code takes another 1gb. 
 
 # coding style
 - keep it as minimal as possible, little abstractions made and used, large functions are fine and encounrged over massive ones
@@ -13,4 +13,5 @@ the goal of the project is to make an extremely light weight and blazingly fast 
 
 # visual style
 keep it minimal and simple, little amount of words and effects and styling
-dark theme
+dark theme from zed
+the UI should be borning
